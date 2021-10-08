@@ -7,7 +7,7 @@ from torch.autograd import Variable
 from tensorboardX import SummaryWriter
 from replaybuffer_ma import ReplayBuffer
 
-from rl_algorithms.masac_change.masac_change import MASAC
+from rl_algorithms.masac_change.masac import MASAC
 from mlagents_envs.environment import UnityEnvironment
 from mlagents_envs.environment import ActionTuple
 
