@@ -3,7 +3,7 @@ import torch
 import torch.nn.functional as F
 
 from utils import soft_update
-from rl_algorithms.masac_change.sac_change import SACAgent
+from rl_algorithms.masac_change.sac import SACAgent
 
 MSELoss = torch.nn.MSELoss()
 
