@@ -42,8 +42,11 @@ class SACAgent(object):
         # if automatic_entropy_tune:
         #self.target_entropy = -num_out_pol # torch.prod(torch.Tensor(num_out_pol).to(self.device)).item() # self.target_entropy = - action_dim
         self.target_entropy = - np.log(num_out_pol)
-        self.log_alpha = torch.zeros(1, requires_grad=True)
-        #self.log_alpha = torch.tensor(np.log(init_temperature)).to(self.device)
+        # self.log_alpha = torch.zeros(1, requires_grad=True) #.to(device='cuda')
+        self.log_alpha = torch.zeros(1, requires_grad=True) #.to(device='cuda') # with cpu now
+        # self.log_alpha = self.log_alpha.cuda()
+        #self.log_alpha = torch.tensor(np.log(self.alpha)).to('cuda:0')
+
         self.alpha_optimizer = Adam([self.log_alpha], lr = lr)
 
         self.critic = QNetwork(num_in_critic, 1,
@@ -53,6 +56,15 @@ class SACAgent(object):
         hard_update(self.target_critic, self.critic)
         
         self.critic_optimizer = Adam(self.critic.parameters(), lr=lr)
+
+        # extra critic value for constrain objective
+        self.constrain_critic = QNetwork(num_in_critic, 1,
+                                 hidden_dim,hidden_dim)
+        self.constrain_target_critic = QNetwork(num_in_critic, 1,
+                                        hidden_dim, hidden_dim)
+        hard_update(self.constrain_target_critic, self.constrain_critic)
+        
+        self.constrain_critic_optimizer = Adam(self.constrain_critic.parameters(), lr=lr)
 
     def step(self, obs, evaluate=False):
         """
