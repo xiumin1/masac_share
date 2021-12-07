@@ -26,7 +26,7 @@ class ReplayBuffer(object):
         for odim, adim in zip(obs_dims, ac_dims):
             self.obs_buffs.append(np.zeros((max_steps, odim)))
             self.ac_buffs.append(np.zeros((max_steps, adim)))
-            self.rew_buffs.append(np.zeros(max_steps))
+            self.rew_buffs.append(np.zeros((max_steps, 3)))
             self.next_obs_buffs.append(np.zeros((max_steps, odim)))
             self.done_buffs.append(np.zeros(max_steps))
             self.sum_reward.append(0)
@@ -104,11 +104,19 @@ class ReplayBuffer(object):
             cast = lambda x: Variable(Tensor(x), requires_grad=False).cuda()
         else:
             cast = lambda x: Variable(Tensor(x), requires_grad=False)
+        ret_rews = [None]*2
         if norm_rews:
-            ret_rews = [cast((self.rew_buffs[i][inds] -
-                              self.rew_buffs[i][:self.filled_i].mean()) /
-                             self.rew_buffs[i][:self.filled_i].std())
-                        for i in range(self.num_agents)]
+            for i in range(self.num_agents):
+                if self.rew_buffs[i][:self.filled_i].std()!=0.0:
+                    ret_rews[i] = cast((self.rew_buffs[i][inds] -self.rew_buffs[i][:self.filled_i].mean()) /
+                                    self.rew_buffs[i][:self.filled_i].std())
+                else:
+                    ret_rews[i] = cast(self.rew_buffs[i][inds])
+
+            # ret_rews = [cast((self.rew_buffs[i][inds] -
+            #                   self.rew_buffs[i][:self.filled_i].mean()) /
+            #                  self.rew_buffs[i][:self.filled_i].std())
+            #             for i in range(self.num_agents)]
         else:
             ret_rews = [cast(self.rew_buffs[i][inds]) for i in range(self.num_agents)]
         return ([cast(self.obs_buffs[i][inds]) for i in range(self.num_agents)],
@@ -129,7 +137,7 @@ class ReplayBuffer(object):
     def get_average_step_rewards(self, step_i):
         return [self.rew_buffs[i][-step_i:].mean() for i in range(self.num_agents)]
 
-    def get_average_episode_rewards(self, ep_i, step_i):
-        # calculate the episode reward over all episodes to see the reward change
-        self.sum_reward = [(self.sum_reward[i] + self.rew_buffs[i][-step_i].sum())for i in range(self.num_agents)]
-        return [rew/(ep_i+1) for rew in self.sum_reward]
+    # def get_average_episode_rewards(self, ep_i, step_i):
+    #     # calculate the episode reward over all episodes to see the reward change
+    #     self.sum_reward = [(self.sum_reward[i] + self.rew_buffs[i][-step_i:].sum())for i in range(self.num_agents)]
+    #     return [rew/(ep_i+1) for rew in self.sum_reward]
