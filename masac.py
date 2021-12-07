@@ -3,7 +3,7 @@ import torch
 import torch.nn.functional as F
 
 from utils import soft_update
-from rl_algorithms.masac_change.sac_change import SACAgent
+from rl_algorithms.masac_crpo.sac_crpo import SACAgent
 
 MSELoss = torch.nn.MSELoss()
 
@@ -59,12 +59,35 @@ class MASAC(object):
         return [a.step(obs, evaluate=evaluate) for a, obs in zip(self.agents,
                                                                  observations)]
 
-    def update (self, sample, agent_i, parallel=False, logger=None):
+    def update (self, sample, agent_i, constrain_reach=[False, False], parallel=False, logger=None):
 
         obs, acs, rews, next_obs, dones = sample
         curr_agent = self.agents[agent_i]
 
+        # rews shape = (2, 256, 3)
         # sample batch from memory
+        ########### update the constrain value network
+        curr_agent.constrain_critic_optimizer.zero_grad()
+
+        out = [pi.sample(nobs) for pi, nobs in zip(self.policies, next_obs)]
+        all_trgt_acs = [out[0][0], out[1][0]]
+        next_state_log_pi = out[agent_i][1]
+        
+        trgt_q_in = torch.cat((*next_obs, *all_trgt_acs), dim=1)
+        q1_next_target, q2_next_target = curr_agent.constrain_target_critic(trgt_q_in)
+        min_q_next_target = torch.min(q1_next_target,  q2_next_target) - curr_agent.alpha*next_state_log_pi
+        y_target = rews[agent_i][:,0].view(-1,1) + (1-dones[agent_i].view(-1,1))*self.gamma*min_q_next_target
+        # two q-functions to mitigate positive bias in the policy improvement step
+        q_in = torch.cat((*obs, *acs), dim=1)
+        q1, q2 = curr_agent.constrain_critic(q_in)
+        q1_loss = F.mse_loss(q1, y_target)
+        q2_loss = F.mse_loss(q2, y_target)
+        constrain_q_loss = q1_loss + q2_loss
+
+        constrain_q_loss.backward(retain_graph=True)
+        torch.nn.utils.clip_grad_norm_(curr_agent.constrain_critic.parameters(), 0.5)
+        curr_agent.constrain_critic_optimizer.step()
+
         ########### update value network
         curr_agent.critic_optimizer.zero_grad()
 
@@ -75,12 +98,7 @@ class MASAC(object):
         trgt_q_in = torch.cat((*next_obs, *all_trgt_acs), dim=1)
         q1_next_target, q2_next_target = curr_agent.target_critic(trgt_q_in)
         min_q_next_target = torch.min(q1_next_target,  q2_next_target) - curr_agent.alpha*next_state_log_pi
-        y_target = rews[agent_i].view(-1,1) + (1-dones[agent_i].view(-1,1))*self.gamma*min_q_next_target
-        # handreach, height, target,
-        # 0.7,       0.2   , 0.1
-        # rews[0:255]=[(-1,1 =[0.7 + 0.2 + 0.1])), ]
-        # 0-n step, episode, 
-        # Q (s, a) = height reward
+        y_target = rews[agent_i][:,1].view(-1,1) + (1-dones[agent_i].view(-1,1))*self.gamma*min_q_next_target
         # two q-functions to mitigate positive bias in the policy improvement step
         q_in = torch.cat((*obs, *acs), dim=1)
         q1, q2 = curr_agent.critic(q_in)
@@ -98,7 +116,12 @@ class MASAC(object):
         all_actions = [out1[0][0], out1[1][0]]
         state_log_pi = out1[agent_i][1]
         q_p_in = torch.cat((*obs, *all_actions), dim=1)
-        q1_value, q2_value = curr_agent.critic(q_p_in)
+        # add  the constrain check here to select the right critic function to use
+        if constrain_reach[agent_i]:
+            q1_value, q2_value = curr_agent.critic(q_p_in)
+        else:
+            q1_value, q2_value = curr_agent.constrain_critic(q_p_in)
+
         min_q_pi = torch.min(q1_value, q2_value)
 
         policy_loss = (curr_agent.alpha*state_log_pi - min_q_pi).mean()
@@ -123,7 +146,7 @@ class MASAC(object):
                                {'q_loss': q_loss,
                                 'pol_loss': policy_loss,
                                 "log_pi": state_log_pi.mean().item(),
-                                'min_q_pi': min_q_pi.mean().item(),
+                                'constrain_q_loss': constrain_q_loss,
                                 'alpha': alpha_tlogs}, self.niter)
 
     def update_all_targets(self):
