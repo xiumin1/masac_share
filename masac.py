@@ -3,7 +3,7 @@ import torch
 import torch.nn.functional as F
 
 from utils import soft_update
-from rl_algorithms.masac_change.sac import SACAgent
+from rl_algorithms.masac_change.sac_change import SACAgent
 
 MSELoss = torch.nn.MSELoss()
 
@@ -76,7 +76,11 @@ class MASAC(object):
         q1_next_target, q2_next_target = curr_agent.target_critic(trgt_q_in)
         min_q_next_target = torch.min(q1_next_target,  q2_next_target) - curr_agent.alpha*next_state_log_pi
         y_target = rews[agent_i].view(-1,1) + (1-dones[agent_i].view(-1,1))*self.gamma*min_q_next_target
-
+        # handreach, height, target,
+        # 0.7,       0.2   , 0.1
+        # rews[0:255]=[(-1,1 =[0.7 + 0.2 + 0.1])), ]
+        # 0-n step, episode, 
+        # Q (s, a) = height reward
         # two q-functions to mitigate positive bias in the policy improvement step
         q_in = torch.cat((*obs, *acs), dim=1)
         q1, q2 = curr_agent.critic(q_in)
@@ -85,7 +89,7 @@ class MASAC(object):
         q_loss = q1_loss + q2_loss
 
         q_loss.backward(retain_graph=True)
-        torch.nn.utils.clip_grad_norm(curr_agent.critic.parameters(), 0.5)
+        torch.nn.utils.clip_grad_norm_(curr_agent.critic.parameters(), 0.5)
         curr_agent.critic_optimizer.step()
 
         ########## update policy network
@@ -100,7 +104,7 @@ class MASAC(object):
         policy_loss = (curr_agent.alpha*state_log_pi - min_q_pi).mean()
 
         policy_loss.backward()
-        torch.nn.utils.clip_grad_norm(curr_agent.policy.parameters(), 0.5)
+        torch.nn.utils.clip_grad_norm_(curr_agent.policy.parameters(), 0.5)
         curr_agent.policy_optimizer.step()
 
         ########## update entropy, tuning entropy parameter alpha
@@ -177,6 +181,16 @@ class MASAC(object):
                      'agent_params': [a.get_params() for a in self.agents]}
         torch.save(save_dict, filename)
 
+    def nsave(self, filename, obs_norm):
+        """
+        Save trained parameters of all agents into one file
+        """
+        self.prep_training(device='cpu')  # move parameters to CPU before saving
+        save_dict = {'init_dict': self.init_dict,
+                        'agent_params': [a.get_params() for a in self.agents]}
+        save_total = [obs_norm.mean, obs_norm.std, save_dict]
+        torch.save(save_total, filename)
+
     @classmethod
     def init_from_env(cls, env, states, actions,
                       gamma=0.95, tau=0.01, lr=0.01, hidden_dim=64):
@@ -217,3 +231,16 @@ class MASAC(object):
         for a, params in zip(instance.agents, save_dict['agent_params']):
             a.load_params(params)
         return instance
+
+    @classmethod
+    def init_from_nsave(cls, filename):
+        """
+        Instantiate instance of this class from file created by 'save' method
+        """
+        # save_dict = torch.load(filename)
+        o_mean, o_std, save_dict = torch.load(filename)
+        instance = cls(**save_dict['init_dict'])
+        instance.init_dict = save_dict['init_dict']
+        for a, params in zip(instance.agents, save_dict['agent_params']):
+            a.load_params(params)
+        return instance, o_mean, o_std
