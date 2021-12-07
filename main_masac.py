@@ -6,7 +6,7 @@ import numpy as np
 from pathlib import Path
 from torch.autograd import Variable
 from tensorboardX import SummaryWriter
-from replaybuffer_ma import ReplayBuffer
+from replaybuffer_crpo import ReplayBuffer
 from normalizer import normalizer
 
 from rl_algorithms.masac_crpo.masac_crpo import MASAC
@@ -61,7 +61,7 @@ def make_environment(config):
         for i in range(num_agents):
             spec = env.behavior_specs[behavior_names[i]]
             actions_dim.append(spec.action_spec.continuous_size)
-            states_dim.append(spec.observation_shapes[0][0])
+            states_dim.append(spec.observation_shapes[0][0] -3 ) # to get rid of the last 3 dims which use to hold each reward item, handreach, boardreach, ballreach
 
         # modify the force which could be added into the joint of each joint [-1, 1]
         # follow instructions of using EngineConfigurationChannel and EnvironmentParametersChannel:
@@ -151,12 +151,14 @@ def run_train(config):
     t = 0
     count_explore_step = 0 
     sum_episode_rewards=[0]*num_agents
+
+    constrain_reach=[False, False] 
     for ep_i in range(0, config['train']['episodes_train'], config['train']['n_rollout_threads']):
         env.reset()
         obs = []
         for i in range(num_agents):       
             decision_steps, terminal_steps = env.get_steps(behavior_names[i])
-            obs.append(decision_steps.obs[0])
+            obs.append(decision_steps.obs[0][:, :-3])
         # obs = np.array(temp)
 
         model.prep_rollouts(device='cpu')
@@ -164,6 +166,7 @@ def run_train(config):
         DONE = False
         step_i = 0
         episode_rewards=[0]*num_agents
+        Jreward = []
         while not DONE and step_i<config['train']['steps_train']:
             step_i += 1
             count_explore_step += 1
@@ -197,17 +200,20 @@ def run_train(config):
                 decision_steps, terminal_steps = env.get_steps(behavior_names[i])
                 if len(decision_steps) > 0:
                     dones[i] = False
-                    next_obs[i] = decision_steps.obs[0]
-                    rewards[i] = decision_steps.reward * config['train']['reward_scale']
+                    next_obs[i] = decision_steps.obs[0][:, :-3]
+                    # rewards[i] = decision_steps.reward * config['train']['reward_scale']
+                    rewards[i] = decision_steps.obs[0][:, -3:] * config['train']['reward_scale']
                 if len(terminal_steps) > 0:
                     dones[i] = True
-                    next_obs[i] = terminal_steps.obs[0]
-                    rewards[i] = terminal_steps.reward * config['train']['reward_scale'] # add reward_scale to make sure the entropy term and Q term close to each other
+                    next_obs[i] = terminal_steps.obs[0][:,:-3]
+                    # rewards[i] = terminal_steps.reward * config['train']['reward_scale'] # add reward_scale to make sure the entropy term and Q term close to each other
+                    rewards[i] = terminal_steps.reward[0] * np.ones((1,3)) # collect the three reward component
+
                 episode_rewards[i] += rewards[i]
             replay_buffer.push(obs, actions, rewards, next_obs, dones)
             obs = next_obs
             # episode_rewards =[episode_rewards[i]+rewards[i] for i in range(num_agents)]
-
+            Jreward.append(rewards)
             t += config['train']['n_rollout_threads']
             if (len(replay_buffer) >= config['train']['batch_size'] and (t % config['train']['steps_per_update']) < config['train']['n_rollout_threads']):
                 if config['train']['use_gpu']:
@@ -220,7 +226,7 @@ def run_train(config):
                         # sample = replay_buffer.sample(config.batch_size, to_gpu=config.use_gpu)
                         sample = replay_buffer.sample(config['train']['batch_size'], to_gpu=config['train']['use_gpu'])
                         sample = norm_update(sample, obs_norm)
-                        model.update(sample, a_i, logger=logger)
+                        model.update(sample, a_i, constrain_reach, logger=logger)
                         # q p update
 
                     model.update_all_targets()
@@ -232,13 +238,18 @@ def run_train(config):
                     DONE = True
                     # print("done: ", DONE)
 
-            #  calculate monte carlo, a
-            #  J = discount* r_height + ....,    Q(s,a)=expection(r_height), Q(S,A) = EXP(r_target)
+        constrain_reach = constrain_check_Func(Jreward)
         # ep_rews = replay_buffer.get_average_rewards(config.episode_length * config.n_rollout_threads)
         #ep_rews = replay_buffer.get_average_step_rewards(step_i)
         sum_episode_rewards =[sum_episode_rewards[i] + episode_rewards[i] for i in range(num_agents)]
-        ep_rews = [r/(ep_i+1) for r in sum_episode_rewards]
-        #ep_rews = replay_buffer.get_average_episode_rewards(ep_i, step_i)
+
+        # print the episode reward based on the constrain reach parameter, is it reached, then print the final objective reward, otherwise print the constrained reward
+        ep_rews = [0]*num_agents
+        for i in range(num_agents):
+            if constrain_reach[i]:
+                ep_rews[i] = sum_episode_rewards[i][0,1]/(ep_i+1)
+            else:
+                ep_rews[i] = sum_episode_rewards[i][0,0]/(ep_i+1)
         for a_i, a_ep_rew in enumerate(ep_rews):
             logger.add_scalar('agent%i/mean_episode_rewards' % a_i,
                               a_ep_rew * config['train']['steps_train'], ep_i)
@@ -327,6 +338,28 @@ def run_test(config):
 
     env.close()
 
+def constrain_check_Func(Jreward):
+    # Jreward shape = (500, 2, 1, 3)
+    # constrain check for both agents
+    constrain_reach = [False, False]
+    sumG = np.zeros((2, 1, 3))
+    discount = 0.99
+    # testD = 0
+    # monte carlo to calculate the J value of the current trajectory
+    for i in reversed(range(20, len(Jreward))):
+        sumG = Jreward[i] + discount*sumG
+        # testD = 0.95 + 0.99*testD
+
+    # guess the max reward per step be 0.95, and calcualte its J value the same way as threshold
+    dG = 0
+    guess_max_reward = 0.95
+    dG = guess_max_reward / (1 - discount)
+
+    yita = 0.001
+    constrain_reach = [g>(dG + yita) for g in sumG[:,:,0]]
+
+    return constrain_reach
+
 def norm_update(sample, obs_norm):
     # the input in torch.tensor type
     obs, acs, rews, next_obs, dones = sample
@@ -352,7 +385,7 @@ if __name__ == '__main__':
     parser.add_argument("--config_path", default='', help='the path of the config yaml file used for the current run')
     out = parser.parse_args()
     # for line by line debug purpose
-    # out.config_path = 'configs/masac_change/train/s14_wb71_run1.yml'
+    out.config_path = 'configs/masac_crpo/train/s13_wb72_run1.yml'
 
     with open(out.config_path, 'r') as fp:
         try: 
