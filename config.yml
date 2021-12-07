@@ -1,0 +1,71 @@
+---
+proj_path: 'D:/BoxSync/projects2020/marl_mlagent_torch/RLcode/'
+env_path: 'unity_exes/'
+model_path: 'model_results/masac_change/'
+env_name: 'wb70_sub3'
+
+base_port: 5012             # the base port use to communicate with unity environment
+worker_id: 13                # use to separate the socket communication channel between python and Unity environment
+run_type: 'train'           # choose to train or test
+
+env:
+  force_magnitude: 10
+  time_penalty_reward: 0
+
+  target_distance: 0.02
+  target_angle: 5.0
+  target_maintain_time: 3
+
+  ball_balance_ratio: 0.2 #0.1 # 0
+  board_ratio: 0.3 #0.2 # 0.4
+  comfort_pose_ratio: 0.0
+  trimatch_ratio: 0.5 #0.7  # 0.6
+
+  cam_rot_speed: 0
+  cam_look_distance: 2
+
+  observe_index: 2                          # observeratio index 1,2,3. to choose different state info, the #3 has a dim of 107, remove the trimatch observation.
+  action_index: 3 
+  use_support: 1                            # 1 means need support, 0 means no support after connect
+
+  comfort_dense_reward_index: 0             # 0 means no reward, 1, 2, 3, etc. means choose the corresponding reward calculation method
+  comfort_sparse_reward_index: 0            # dense and sparse use to separate the different type of reward
+
+  board_dense_reward_index: 13 
+  board_sparse_reward_index: 0 
+
+  ball_balance_dense_reward_index: 6
+  ball_balance_sparse_reward_index: 0  
+
+  trimatch_dense_reward_index: 8 
+  trimatch_sparse_reward_index: 0 
+
+  print_pythonparams: 0
+  print_rewardlog: 1
+  remove_support_episodes: 1000
+
+train:
+  load_init_policy: ''
+  seed: 11                # random seed
+  n_rollout_threads: 1
+  buffer_length: 100000
+  episodes_train: 100000
+  steps_train: 500      # 3000 steps is too much
+  explore_step: 10000      # explore certain steps randomly before using the training action ouput
+  steps_per_update: 100
+  num_updates: 4          # Number of updates per update cycle
+  batch_size: 256
+  save_interval: 100
+  hidden_dim: 256
+  lr: 0.0003              # learning rate # 3e-4 , 1e-3
+  tau: 0.005              # 0.005, 0.001
+  gamma: 0.99             # 0.96
+  reward_scale: 1.0       # 100
+  use_gpu: false          # 'store_true'
+
+  clip_range: 1
+  
+test:
+  episodes_test: 40
+  steps_test: 500
+  test_model: 'wb70_sub3/run1/model.pt'
